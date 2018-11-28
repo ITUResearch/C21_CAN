@@ -82,7 +82,7 @@ static void can_fd_send_extended_message(uint32_t id_value, uint8_t *data);
 #define CAN_RX_STANDARD_FILTER_INDEX_1    1
 #define CAN_RX_STANDARD_FILTER_ID_0     0x45A
 #define CAN_RX_STANDARD_FILTER_ID_0_BUFFER_INDEX     2
-#define CAN_RX_STANDARD_FILTER_ID_1     0x285
+#define CAN_RX_STANDARD_FILTER_ID_1     0x468
 #define CAN_RX_EXTENDED_FILTER_INDEX_0    0
 #define CAN_RX_EXTENDED_FILTER_INDEX_1    1
 #define CAN_RX_EXTENDED_FILTER_ID_0     0x100000A5
@@ -109,7 +109,8 @@ static struct can_rx_element_buffer rx_element_buffer;
 
 static int32_t delta_charge; //total electrical charge that been charged into battery plus discharged from battery in unit of mAsec.
 
-
+// report data period, default value is 5 seconds
+volatile uint32_t data_report_period = 5;
 
 enum commandType {
 	commandType_null,
@@ -753,6 +754,15 @@ static void can_set_standard_filter_0(void)
 	CAN_RX_STANDARD_FILTER_INDEX_0);
 	can_enable_interrupt(&can_instance, CAN_RX_BUFFER_NEW_MESSAGE);
 }
+static void can_set_standard_filter_1(void)
+{
+	struct can_standard_message_filter_element sd_filter;
+	can_get_standard_message_filter_element_default(&sd_filter);
+	sd_filter.S0.bit.SFID1 = CAN_RX_STANDARD_FILTER_ID_1;
+	can_set_rx_standard_filter(&can_instance, &sd_filter,
+	CAN_RX_STANDARD_FILTER_INDEX_1);
+	can_enable_interrupt(&can_instance, CAN_RX_FIFO_0_NEW_MESSAGE);
+}
 
 
 static void can_send_standard_message(uint32_t id_value, uint8_t *data,
@@ -849,6 +859,7 @@ void CAN0_Handler(void)
 {
 	volatile uint32_t status, i, rx_buffer_index;
 	status = can_read_interrupt_status(&can_instance);
+	//printf("can_read_interrupt_status =  %d", status & CAN_RX_BUFFER_NEW_MESSAGE);
 
 	if (status & CAN_RX_BUFFER_NEW_MESSAGE) {
 		can_clear_interrupt_status(&can_instance, CAN_RX_BUFFER_NEW_MESSAGE);
@@ -859,14 +870,14 @@ void CAN0_Handler(void)
 				can_get_rx_buffer_element(&can_instance, &rx_element_buffer,
 				rx_buffer_index);
 				if (rx_element_buffer.R0.bit.XTD) {
-					//printf("\n\r Extended FD message received in Rx buffer. The received data is: \r\n");
+					printf("\n\r Extended FD message received in Rx buffer. The received data is: \r\n");
 					} else {
-					//printf("\n\r Standard FD message received in Rx buffer. The received data is: \r\n");
+					printf("\n\r Standard FD message received in Rx buffer. The received data is: \r\n");
 				}
 				for (i = 0; i < CONF_CAN_ELEMENT_DATA_SIZE; i++) {
-					//printf("  %d",rx_element_buffer.data[i]);
+					printf("  %d",rx_element_buffer.data[i]);
 				}
-				//printf("\r\n\r\n");
+				printf("\r\n\r\n");
 			}
 		}
 	}
@@ -882,17 +893,18 @@ void CAN0_Handler(void)
 			standard_receive_index = 0;
 		}
 		if (rx_element_fifo_0.R1.bit.FDF) {
-			//printf("\n\r Standard FD message received in FIFO 0. The received data is: \r\n");
+			printf("\n\r Standard FD message received in FIFO 0. The received data is: \r\n");
 			for (i = 0; i < CONF_CAN_ELEMENT_DATA_SIZE; i++) {
-				//printf("  %d",rx_element_fifo_0.data[i]);
+				printf("  %d",rx_element_fifo_0.data[i]);
 			}
-			} else {
-			//printf("\n\r Standard normal message received in FIFO 0. The received data is: \r\n");
+		} else {
+			printf("\n\r Standard normal message received in FIFO 0. The received data is: \r\n");
 			for (i = 0; i < rx_element_fifo_0.R1.bit.DLC; i++) {
-				//printf("  %d",rx_element_fifo_0.data[i]);
+				printf("  %d",rx_element_fifo_0.data[i]);
 			}
+			data_report_period = rx_element_fifo_0.data[7];
 		}
-		//printf("\r\n\r\n");
+		printf("\r\n\r\n");
 	}
 
 	if (status & CAN_RX_FIFO_1_NEW_MESSAGE) {
@@ -906,20 +918,20 @@ void CAN0_Handler(void)
 			extended_receive_index = 0;
 		}
 
-		//printf("\n\r Extended FD message received in FIFO 1. The received data is: \r\n");
+		printf("\n\r Extended FD message received in FIFO 1. The received data is: \r\n");
 		for (i = 0; i < CONF_CAN_ELEMENT_DATA_SIZE; i++) {
 			commandMsg[i] = rx_element_fifo_1.data[i];
-			//printf("  %d",rx_element_fifo_1.data[i]);
+			printf("  %d",rx_element_fifo_1.data[i]);
 		}
 		canMsgInFlag = 1;
-		//printf("\r\n\r\n");
+		printf("\r\n\r\n");
 	}
 
 	if ((status & CAN_PROTOCOL_ERROR_ARBITRATION)
 	|| (status & CAN_PROTOCOL_ERROR_DATA)) {
 		can_clear_interrupt_status(&can_instance, CAN_PROTOCOL_ERROR_ARBITRATION
 		| CAN_PROTOCOL_ERROR_DATA);
-		//printf("Protocol error, please double check the clock in two boards. \r\n\r\n");
+		printf("Protocol error, please double check the clock in two boards. \r\n\r\n");
 	}
 }
 //! [can_interrupt_handler]
@@ -1036,10 +1048,10 @@ void rtc_match_callback(void)
 		send_battery_data();
 		battery_charge_calculation(5);
 		if (charger_status == 1) {
-			printf("%d voltage %d \r\n", time_index, charge_voltage_adc_result * 5000 / 4096);
+			printf("charger_status = %d, %d voltage %d \r\n", charger_status, time_index, charge_voltage_adc_result * 5000 / 4096);
 			printf("%d c_current %d \r\n", time_index, charge_current_adc_result * 5000 / 4096);
 		} else {
-			printf("%d voltage %d \r\n", time_index, charge_voltage_adc_result * 5000 / 4096);
+			printf("charger_status = %d, %d voltage %d \r\n", charger_status, time_index, charge_voltage_adc_result * 5000 / 4096);
 			printf("%d d_current %d \r\n\r\n", time_index++, discharge_current_adc_result * 5000 / 4096);
 		}
 		//reset flags
@@ -1053,7 +1065,7 @@ void rtc_match_callback(void)
 	alarm.time.second = alarm.time.second % 60;
 	
 	//forced data reporting every 10 seconds
-	if ((alarm.time.second % 5) == 0)
+	if ((alarm.time.second % data_report_period) == 0)
 	{
 		dateReportFlag = 1;
 	}
@@ -1157,6 +1169,7 @@ int main(void)
 
 	configure_dac();
 	configure_dac_channel();
+
 	
 	
 
@@ -1165,6 +1178,7 @@ while (events_is_busy(&example_event)) {
 };
 
 	can_set_standard_filter_0();
+	can_set_standard_filter_1();
 	
 	battery_init();
 	
@@ -1180,7 +1194,7 @@ while (events_is_busy(&example_event)) {
 		//}
 		
 		if (1==canMsgInFlag){
-			//printf("Command Received!\r\n");
+			printf("Command Received!\r\n");
 			processCommandMsg();
 		}
 		if ((0 == system_busy_flag) && (1 == commandReady))
